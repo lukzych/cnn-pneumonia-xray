@@ -50,11 +50,14 @@ train_features_batch, train_labels_batch = next(iter(train_dataloader))
 print(train_features_batch.shape, train_labels_batch.shape)
 
 
-random_inx = torch.randint(0, len(train_features_batch), size=[1]).item() #losowy tensor z 1 liczbą np. tensor([2])   .item() # zamienia tensor na zwykłą liczbę całkowitą -> np. 2 
+random_inx = torch.randint(0, len(train_features_batch), size=[1]).item() #losowy tensor z 1 liczbą np. tensor([2])   .item() # zamienia tensor na zwykłą liczbę całkowitą -> np. 2
 
 #Dokumentacja ImageFolder
 #krotka (tuple)
 img, label = train_features_batch[random_inx], train_labels_batch[random_inx]
+
+print(img)
+
 
 plt.imshow(img.permute(1,2,0)) #Matplotlib oczekuje formatu(H, W, C) -> (512, 512, 3) tensor ma format (C, H, W) (3, 512, 512) permute i elo
 plt.title(class_names_train[label])
@@ -70,4 +73,3 @@ plt.show()
 #TODO nn.Flatten() -> co to
 #TODO forward
 #TODO Moze Jupyter
-
