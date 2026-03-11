@@ -14,29 +14,8 @@ import cv2
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 32
-
 IMG_SIZE = (224,224)
-
-data_trans = transforms.Compose([
-    transforms.Resize((IMG_SIZE)), #OBRAZ MUSI MIEĆ TEN SAM ROZMIAR TO JEST PROBLEM
-    transforms.Grayscale(1),
-    transforms.ToTensor()
-])
-
-
-test_datapath = r'./dataset/chest_xray/test'
-train_datapath = r'./dataset/chest_xray/train'
-val_datapath = r'./dataset/chest_xray/val'
-
-test_dataset = ImageFolder(test_datapath, transform=data_trans)
-train_dataset = ImageFolder(train_datapath, transform=data_trans)
-val_dataset = ImageFolder(val_datapath,transform=data_trans)
-
-
-
-test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
-train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True)
+NUM_EPOCHS = 5
 
 
 class BaselineModel(nn.Module):
@@ -54,24 +33,54 @@ class BaselineModel(nn.Module):
     
 model = BaselineModel().to(device)
 
+#NORMAL - 0, PHNE - 1
+def confusion_matrix(actual, predicted, matrix):
 
-#Training
-learning_rate = 0.01
-NUM_EPOCHS = 5
+    for actual, predicted in zip(actual, predicted):
+        if predicted == 1 and actual == 1:
+            matrix[1][1] += 1
+
+        if predicted == 0 and actual == 1:
+            matrix[1][0] += 1
+
+        if predicted == 0 and actual == 0:
+            matrix[0][0] += 1
+        
+        if predicted == 1 and actual == 0:
+            matrix[0][1] += 1
+
+    return matrix
+
+
+data_trans = transforms.Compose([
+    transforms.Resize((IMG_SIZE)), #OBRAZ MUSI MIEĆ TEN SAM ROZMIAR TO JEST PROBLEM
+    transforms.Grayscale(1),
+    transforms.ToTensor()
+])
+
+train_datapath = r'./dataset/chest_xray/train'
+train_dataset = ImageFolder(train_datapath, transform=data_trans)
+train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+test_datapath = r'./dataset/chest_xray/test'
+test_dataset = ImageFolder(test_datapath, transform=data_trans)
+test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+val_datapath = r'./dataset/chest_xray/val'
+val_dataset = ImageFolder(val_datapath,transform=data_trans)
+val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
 
 loss_fn = nn.BCELoss() #Binary Cross Entropy - do klasyfikacji binarnej
-#MSE (Mean Squared Entropy - do regresji -> liczba ciągła)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-#model.parameters() zwraca wagi i biasy to co model ma się nauczyć
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001) #model.parameters() zwraca wagi i biasy to co model ma się nauczyć
 
 
 # Jedna epoka kończy się jak wszystkie obrazy zostały przetworzone,
 #czyli 163 batche i tak dalej
 for epoch in range(NUM_EPOCHS):
 
-
     model.train() #Tryb treningowy
-    epoch_loss = 0 #zbiera sumę lossów z batchów (linia 98), dzielomy przez liczbe batchy i jest średnia (linia 102)
+    epoch_loss = 0 #zbiera sumę lossów z batchów, dzielomy przez liczbe batchy i jest średnia (linia 102)
     correct  = 0
     total = 0
 
@@ -96,31 +105,11 @@ for epoch in range(NUM_EPOCHS):
         optimizer.step()
 
         epoch_loss = epoch_loss + loss.item() #.item() chcemy dodać float do float a loss to tensor
-        correct += (predictions.round() == labels).sum().item()
+        correct += (predictions.round() == labels).sum().item() #Próg 0.5 (round)
         total = total + labels.size(0)
 
     print(f"Epoka {epoch+1}/{NUM_EPOCHS} | Loss: {epoch_loss/len(train_dataloader):.4f} | Accuracy: {correct/total*100:.2f}%")
 
-
-# sklearn.metrics import confusion_matrix cos tam sam to zaimplementuje w tablicy
-#Do klasyfikacji binarnej macierz będzie miała 2 x 2
-#NORMAL - 0, PHNE - 1
-def confusion_matrix(actual, predicted, matrix):
-
-    for actual, predicted in zip(actual, predicted):
-        if predicted == 1 and actual == 1:
-            matrix[1][1] += 1
-
-        if predicted == 0 and actual == 1:
-            matrix[1][0] += 1
-
-        if predicted == 0 and actual == 0:
-            matrix[0][0] += 1
-        
-        if predicted == 1 and actual == 0:
-            matrix[0][1] += 1
-
-    return matrix
 
 #Testowanie
 model.eval() #Tryb ewaluacji - sprawdzanie
@@ -152,6 +141,8 @@ print(matrix) #Zobaczymy
 #Epoka 4/5 | Loss: 0.1465 | Accuracy: 94.44%
 #Epoka 5/5 | Loss: 0.1427 | Accuracy: 95.03%
 #Test Accuracy: 67.95%
+
+'''Overfitting'''
 #[[35, 199], [1, 389]] -> macierz pomyłek
 
                                 #Co model 
@@ -159,28 +150,7 @@ print(matrix) #Zobaczymy
 #Labele     #NORMAL         35            199
             #PHNEUMONIA     1             389
 
-#efekt tego że w datasecie jest więcej zdjęć PHNEUMONIA niż NORMAL
-
-
-
-
-
-#Flatten + Linear słabe rozwiązanie (do przewidzenia w sumie)
 #TODO jednolite zmienne dla notebooka i skryptu main.py bo jest syf
-#TODO Poukładać ładnie
 #TODO MACIERZ POMYŁEK (jako tako jest)
 #TODO zrobić CNN do obrazów ta cała "konwolucja"
 #TODO PRZEPISAC DO NOTEBOOKA
-
-
-'''
-WIKIPEDIA
-Nadmierne dopasowanie (ang. overfitting) a. przeuczenie 
-(branż. „przetrenowanie”, ang. overtraining) efekt obserwowany np. w statystyce,
-gdy model statystyczny ma zbyt dużo parametrów w stosunku do rozmiaru próby,
-na podstawie której był konstruowany; 
-w przypadku uczenia maszynowego modele o dużej złożoności mogą świetnie dopasować
-się do danych uczących, jednak będą dawały słabe wyniki, 
-gdy zastosuje się je do danych, z którymi nie zetknęły się podczas uczenia.
-'''
-
