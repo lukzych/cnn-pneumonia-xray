@@ -1,16 +1,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset, ConcatDataset
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
+
+from collections import Counter
 
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 
+import random
 #https://www.learnpytorch.io/03_pytorch_computer_vision/
 #https://www.learnpytorch.io/02_pytorch_classification/
+#https://www.youtube.com/watch?v=f3g1zGdxptI&list=PLoROMvodv4rOmsNzYBMe0gJY2XS8AQg16&index=5
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 32
@@ -19,19 +23,51 @@ NUM_EPOCHS = 5
 
 
 class BaselineModel(nn.Module):
-    def __init__(self):
+    def __init__(self, input_shape, hidden_units, output_shape):
         super().__init__()
-        self.layer_stack = nn.Sequential(
+        self.block_1 = nn.Sequential(
+            nn.Conv2d(in_channels=input_shape, 
+                      out_channels=hidden_units, 
+                      kernel_size=3, # filtr
+                      stride=1, # default
+                      padding=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=hidden_units, 
+                      out_channels=hidden_units,
+                      kernel_size=3,
+                      stride=1,
+                      padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2,
+                         stride=2) # default stride value is same as kernel_size
+        )
+        self.block_2 = nn.Sequential(
+            nn.Conv2d(hidden_units, hidden_units, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(hidden_units, hidden_units, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2)
+        )
+        self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_features=224*224, out_features=64),
-            nn.Linear(in_features=64, out_features=1),
+            
+            nn.Linear(in_features=hidden_units*56*56, 
+                      out_features=output_shape),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        return self.layer_stack(x)
-    
-model = BaselineModel().to(device)
+        x = self.block_1(x)
+        x = self.block_2(x)
+        x = self.classifier(x)
+        return x
+
+torch.manual_seed(42)
+model = BaselineModel(
+    input_shape = 1,
+    hidden_units = 32,
+    output_shape = 1
+).to(device)
 
 #NORMAL - 0, PHNE - 1
 def confusion_matrix(actual, predicted, matrix):
@@ -53,14 +89,23 @@ def confusion_matrix(actual, predicted, matrix):
 
 
 data_trans = transforms.Compose([
-    transforms.Resize((IMG_SIZE)), #OBRAZ MUSI MIEĆ TEN SAM ROZMIAR TO JEST PROBLEM
+    transforms.Resize((IMG_SIZE)),
     transforms.Grayscale(1),
     transforms.ToTensor()
 ])
 
+train_trans = transforms.Compose([
+    transforms.Resize(IMG_SIZE),
+    transforms.Grayscale(1),
+    transforms.RandomHorizontalFlip(),    
+    transforms.RandomRotation(10),        
+    transforms.ToTensor()
+])
+
+
 train_datapath = r'./dataset/chest_xray/train'
 train_dataset = ImageFolder(train_datapath, transform=data_trans)
-train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+#train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 test_datapath = r'./dataset/chest_xray/test'
 test_dataset = ImageFolder(test_datapath, transform=data_trans)
@@ -70,17 +115,47 @@ val_datapath = r'./dataset/chest_xray/val'
 val_dataset = ImageFolder(val_datapath,transform=data_trans)
 val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
+#Zrównoważenie datasetu dodanie zmodyfokowanych obrazów normal (obróconych i lustrzane odbicie)
+normal_inx = []
 
-loss_fn = nn.BCELoss() #Binary Cross Entropy - do klasyfikacji binarnej
+for i, label in enumerate(train_dataset.targets):
+    if label == 0:
+        normal_inx.append(i)
+
+normal_dataset = Subset(train_dataset, normal_inx)
+
+normal_dataset_aug = Subset(
+    ImageFolder(train_datapath, transform=train_trans),  # transformer z augmentacją
+    normal_inx
+)
+
+train_dataset_final = ConcatDataset([
+    train_dataset,        # wszystkie oryginalne
+    normal_dataset_aug,    # tylko NORMAL z augmentacją
+    normal_dataset_aug
+])
+
+train_dataloader = DataLoader(train_dataset_final, batch_size=BATCH_SIZE, shuffle=True)
+
+loss_fn = nn.BCELoss() 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.0001) #model.parameters() zwraca wagi i biasy to co model ma się nauczyć
 
+counter = Counter(train_dataset_final.datasets[0].targets + 
+                  [train_dataset_final.datasets[1].dataset.targets[i] for i in normal_inx])
 
-# Jedna epoka kończy się jak wszystkie obrazy zostały przetworzone,
-#czyli 163 batche i tak dalej
+# albo prościej - po prostu zlicz ręcznie
+normal_count = len(normal_inx) * 2      # oryginalne + augmentowane
+pneumonia_count = len(train_dataset.targets) - len(normal_inx)
+
+print(f"NORMAL: {normal_count}")
+print(f"PNEUMONIA: {pneumonia_count}")
+print(f"Razem: {normal_count + pneumonia_count}")
+
+
 for epoch in range(NUM_EPOCHS):
 
-    model.train() #Tryb treningowy
-    epoch_loss = 0 #zbiera sumę lossów z batchów, dzielomy przez liczbe batchy i jest średnia (linia 102)
+    model.train() 
+    epoch_loss = 0 
     correct  = 0
     total = 0
 
@@ -89,16 +164,12 @@ for epoch in range(NUM_EPOCHS):
         images = images.to(device)
         labels = labels.float().to(device) #BCELoss wymaga float
 
-        #Forward pass
-        #Obrazy lecą przez model (warstwy) i wychodzą predykcje
-        #Potem licze jak bardzo predykjce różnią się od etykiet (loss)
         predictions = model(images).squeeze()
-        loss = loss_fn(predictions, labels)   #labels - oczekiwany wynik, predictions - faktyczny wynik
+        loss = loss_fn(predictions, labels)   
         
-        #zerujemy żeby gradienty się nie sumowały po batchach
-        #wymazujemy gradienty dla starego
+        
         optimizer.zero_grad()
-        #obliczamy gradienty dla aktualnego batcha
+        
         loss.backward()
 
         #updatuje wagi
@@ -115,7 +186,7 @@ for epoch in range(NUM_EPOCHS):
 model.eval() #Tryb ewaluacji - sprawdzanie
 correct = 0
 total = 0
-matrix = [[0,0], [0,0]] #ta macierz pomyłek
+matrix = [[0,0], [0,0]]
 
 with torch.no_grad():
     for images, labels in test_dataloader:
@@ -132,25 +203,21 @@ with torch.no_grad():
         total += labels.size(0)
 
 print(f"Test Accuracy: {correct/total*100:.2f}%")
-print(matrix) #Zobaczymy
+print(matrix)
 
 
-#Epoka 1/5 | Loss: 0.4076 | Accuracy: 85.18%
-#Epoka 2/5 | Loss: 0.1675 | Accuracy: 93.75%
-#Epoka 3/5 | Loss: 0.1657 | Accuracy: 93.65%
-#Epoka 4/5 | Loss: 0.1465 | Accuracy: 94.44%
-#Epoka 5/5 | Loss: 0.1427 | Accuracy: 95.03%
-#Test Accuracy: 67.95%
+'''
 
-'''Overfitting'''
-#[[35, 199], [1, 389]] -> macierz pomyłek
+LATEST SCORE 
+NORMAL: 2682 
+PNEUMONIA: 3875
+Razem: 6557
 
-                                #Co model 
-                            #NORMAL   #PHNEUMONIA
-#Labele     #NORMAL         35            199
-            #PHNEUMONIA     1             389
-
-#TODO jednolite zmienne dla notebooka i skryptu main.py bo jest syf
-#TODO MACIERZ POMYŁEK (jako tako jest)
-#TODO zrobić CNN do obrazów ta cała "konwolucja"
-#TODO PRZEPISAC DO NOTEBOOKA
+Epoka 1/5 | Loss: 0.3406 | Accuracy: 82.25%
+Epoka 2/5 | Loss: 0.1045 | Accuracy: 96.30%
+Epoka 3/5 | Loss: 0.0820 | Accuracy: 97.06%
+Epoka 4/5 | Loss: 0.0707 | Accuracy: 97.61%
+Epoka 5/5 | Loss: 0.0627 | Accuracy: 97.76%
+Test Accuracy: 73.72%
+[[73, 161], [3, 387]]
+'''
